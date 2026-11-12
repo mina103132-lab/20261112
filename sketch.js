@@ -1,5 +1,5 @@
 // 宣告變數以儲存各種圖片精靈檔案
-let stopSprite, walkSprite, magicSprite, magicEffectSprite;
+let stopSprite, walkSprite, magicSprite, magicEffectSprite, jumpSprite;
 
 // === 角色 1：「站立/停止」狀態參數 (12張, 1663x212, 橫向) ===
 let stopTotalFrames = 12;
@@ -22,6 +22,13 @@ let magicSheetHeight = 146;
 let magicFrameWidth, magicFrameHeight;
 let magicCurrentFrame = 0;
 
+// === 角色 1：「跳躍」狀態參數 (13張, 1776x188, 橫向) ===
+let jumpTotalFrames = 13;
+let jumpSheetWidth = 1776;
+let jumpSheetHeight = 188;
+let jumpFrameWidth, jumpFrameHeight;
+let jumpCurrentFrame = 0;
+
 // === 魔法特效參數 (5張, 740x19, 橫向) ===
 let effectTotalFrames = 5;
 let effectSheetWidth = 740;
@@ -32,33 +39,48 @@ let effectCurrentFrame = 0;
 // === 動畫與載入控制變數 ===
 let frameDelay = 6;            // 動畫播放速度
 let imgLoadedCount = 0;        // 記錄已載入圖片數量
-let totalImagesToLoad = 4;     // 總共需載入 4 張圖片精靈
+let totalImagesToLoad = 5;     // 總共需載入 5 張圖片精靈
 let isLoaded = false;          // 是否全部載入完成
+let failedPaths = [];          // 紀錄載入失敗的圖片路徑，方便除錯
 
-// === 角色與特效狀態變數 ===
+// === 角色與移動/物理狀態變數 ===
 let charX;                     // 角色 1 的 X 軸位置
+let charY;                     // 角色 1 的 Y 軸位置（中心點）
+let groundY;                   // 地面基準 Y 座標
 let moveSpeed = 4;             // 移動速度
-let currentAction = "stop";    // 目前狀態："stop", "walk", "magic"
+let jumpVelocityY = 0;         // 跳躍垂直速度
+let gravity = 0.8;             // 重力加速度
+let jumpForce = -15;           // 起跳瞬間的向上推力
+let currentAction = "stop";    // 目前狀態："stop", "walk", "magic", "jump"
 let facingDirection = 1;       // 朝向：1=右, -1=左
 
-// 魔法特效物件變數（用來管理發射出去的特效）
+// 魔法特效物件變數
 let activeEffect = null; 
 
-// 預載入函式：在程式啟動前載入所有圖片資源（已修正為你資料夾中的正確路徑與檔名）
-function preload() {
-  stopSprite = loadImage('1/stop/stop.png', () => { checkImagesLoaded(); }, (err) => { console.error("stop.png 載入失敗", err); });
-  walkSprite = loadImage('1/walk/walk.png', () => { checkImagesLoaded(); }, (err) => { console.error("walk.png 載入失敗", err); });
-  magicSprite = loadImage('1/magic1/magic1.png', () => { checkImagesLoaded(); }, (err) => { console.error("magic1.png 載入失敗", err); });
-  magicEffectSprite = loadImage('1/magic1_effect/magic1_effect.png', () => { checkImagesLoaded(); }, (err) => { console.error("magic1_effect.png 載入失敗", err); });
+// 輔助載入函式：自動追蹤成功與失敗的路徑
+function loadSpriteWithCheck(path) {
+  return loadImage(
+    path,
+    () => {
+      imgLoadedCount++;
+      if (imgLoadedCount >= totalImagesToLoad) {
+        isLoaded = true;
+      }
+    },
+    () => {
+      failedPaths.push(path);
+      console.error("找不到檔案：", path);
+    }
+  );
 }
 
-// 檢查圖片載入進度
-function checkImagesLoaded() {
-  imgLoadedCount++;
-  if (imgLoadedCount >= totalImagesToLoad) {
-    isLoaded = true;
-    console.log("所有圖片精靈載入成功！");
-  }
+// 預載入函式：在程式啟動前載入所有圖片資源
+function preload() {
+  stopSprite = loadSpriteWithCheck('1/stop/stop.png');
+  walkSprite = loadSpriteWithCheck('1/walk/walk.png');
+  magicSprite = loadSpriteWithCheck('1/magic1/magic1.png');
+  magicEffectSprite = loadSpriteWithCheck('1/magic1_effect/magic1_effect.png');
+  jumpSprite = loadSpriteWithCheck('1/jump/jump.png');
 }
 
 // 初始化設定函式
@@ -76,6 +98,9 @@ function setup() {
   magicFrameWidth = magicSheetWidth / magicTotalFrames;
   magicFrameHeight = magicSheetHeight;
 
+  jumpFrameWidth = jumpSheetWidth / jumpTotalFrames;
+  jumpFrameHeight = jumpSheetHeight;
+
   effectFrameWidth = effectSheetWidth / effectTotalFrames;
   effectFrameHeight = effectSheetHeight;
 
@@ -86,51 +111,46 @@ function setup() {
 function draw() {
   drawFightingBackground();
 
+  // 若有圖片載入失敗，直接在畫面上顯示哪一個路徑找不到
+  if (failedPaths.length > 0) {
+    fill(255, 80, 80);
+    textSize(20);
+    textAlign(CENTER, CENTER);
+    text("以下圖片路徑載入失敗，請確認已使用「開啟資料夾」方式載入專案：\n" + failedPaths.join("\n"), width / 2, height / 2);
+    return;
+  }
+
   if (!isLoaded) {
     fill(255);
     textSize(24);
     textAlign(CENTER, CENTER);
-    text("正在載入圖片精靈檔案，請檢查路徑...", width / 2, height / 2);
+    text("正在載入圖片精靈檔案，請稍候...", width / 2, height / 2);
     return;
   }
 
   let displayHeight = height / 3;
   let currentImg, frameW, frameH, currentFrame, totalFrames;
 
+  // 動態計算當前畫布比例下的地面高度（對齊畫面最下方）
+  groundY = height - (displayHeight / 2);
+
+  // 若不在跳躍狀態，Y 座標維持在地面
+  if (currentAction !== "jump") {
+    charY = groundY;
+  }
+
   // === 根據目前動作狀態切換對應的圖片與邏輯 ===
-  if (currentAction === "magic") {
-    currentImg = magicSprite;
-    frameW = magicFrameWidth;
-    frameH = magicFrameHeight;
-    currentFrame = floor(magicCurrentFrame); // 確保影格為整數
-    totalFrames = magicTotalFrames;
+  if (currentAction === "jump") {
+    currentImg = jumpSprite;
+    frameW = jumpFrameWidth;
+    frameH = jumpFrameHeight;
+    totalFrames = jumpTotalFrames;
 
-    // 播放魔法動畫：每隔幾幀推進一次影格
-    if (frameCount % frameDelay === 0) {
-      magicCurrentFrame++;
-      // 當 4 張圖片播放完畢（達到最後一張）
-      if (magicCurrentFrame >= magicTotalFrames) {
-        magicCurrentFrame = 0;
-        // 施法動作結束，切回站立狀態
-        currentAction = "stop";
+    // 套用物理重力公式更新垂直位置
+    jumpVelocityY += gravity;
+    charY += jumpVelocityY;
 
-        // === 施法完成瞬間：在角色前方產生魔法特效 ===
-        activeEffect = {
-          x: charX + (facingDirection * (displayHeight * 0.3)), // 產生在角色前方
-          y: height - (displayHeight / 2),                     // 高度對齊角色中心
-          direction: facingDirection,                          // 紀錄特效飛行方向
-          speed: 8                                             // 特效飛行速度
-        };
-      }
-    }
-  } else if (currentAction === "walk") {
-    currentImg = walkSprite;
-    frameW = walkFrameWidth;
-    frameH = walkFrameHeight;
-    currentFrame = walkCurrentFrame;
-    totalFrames = walkTotalFrames;
-
-    // 處理左右移動與邊界限制
+    // 空中左右移動控制
     if (keyIsDown(RIGHT_ARROW)) {
       charX += moveSpeed;
       facingDirection = 1;
@@ -141,7 +161,63 @@ function draw() {
       if (charX < 0) charX = 0;
     }
 
-    // 動畫影格推進
+    // 動畫影格計算：將跳躍過程平均對應到 13 張圖片影格
+    let jumpProgress = map(charY, groundY, groundY - (height * 0.4), 0, jumpTotalFrames - 1);
+    jumpCurrentFrame = constrain(floor(jumpProgress), 0, jumpTotalFrames - 1);
+
+    // 檢查是否落回到地面
+    if (charY >= groundY) {
+      charY = groundY;
+      jumpVelocityY = 0;
+      // 若落地時還按著左右鍵則切回走路，否則切回站立
+      if (keyIsDown(RIGHT_ARROW) || keyIsDown(LEFT_ARROW)) {
+        currentAction = "walk";
+      } else {
+        currentAction = "stop";
+      }
+    }
+
+  } else if (currentAction === "magic") {
+    currentImg = magicSprite;
+    frameW = magicFrameWidth;
+    frameH = magicFrameHeight;
+    currentFrame = floor(magicCurrentFrame); 
+    totalFrames = magicTotalFrames;
+
+    // 播放魔法動畫
+    if (frameCount % frameDelay === 0) {
+      magicCurrentFrame++;
+      if (magicCurrentFrame >= magicTotalFrames) {
+        magicCurrentFrame = 0;
+        currentAction = "stop";
+
+        // 產生魔法特效
+        activeEffect = {
+          x: charX + (facingDirection * (displayHeight * 0.3)), 
+          y: groundY,                                          
+          direction: facingDirection,                          
+          speed: 8                                             
+        };
+      }
+    }
+  } else if (currentAction === "walk") {
+    currentImg = walkSprite;
+    frameW = walkFrameWidth;
+    frameH = walkFrameHeight;
+    currentFrame = walkCurrentFrame;
+    totalFrames = walkTotalFrames;
+
+    // 左右移動與邊界限制
+    if (keyIsDown(RIGHT_ARROW)) {
+      charX += moveSpeed;
+      facingDirection = 1;
+      if (charX > width) charX = width;
+    } else if (keyIsDown(LEFT_ARROW)) {
+      charX -= moveSpeed;
+      facingDirection = -1;
+      if (charX < 0) charX = 0;
+    }
+
     if (frameCount % frameDelay === 0) {
       walkCurrentFrame = (walkCurrentFrame + 1) % walkTotalFrames;
     }
@@ -153,17 +229,17 @@ function draw() {
     currentFrame = stopCurrentFrame;
     totalFrames = stopTotalFrames;
 
-    // 動畫影格推進
     if (frameCount % frameDelay === 0) {
       stopCurrentFrame = (stopCurrentFrame + 1) % stopTotalFrames;
     }
   }
 
+  let activeFrame = (currentAction === "jump") ? jumpCurrentFrame : currentFrame;
+
   // 計算顯示寬度與高度比例
   let scaleRatio = displayHeight / frameH;
   let displayWidth = frameW * scaleRatio;
-  let charY = height - (displayHeight / 2);
-  let srcX = currentFrame * frameW;
+  let srcX = activeFrame * frameW;
 
   // === 繪製角色 1 ===
   push();
@@ -174,23 +250,19 @@ function draw() {
 
   // === 處理與繪製魔法特效 ===
   if (activeEffect !== null) {
-    // 特效依據方向移動
     activeEffect.x += activeEffect.speed * activeEffect.direction;
 
-    // 檢查特效是否超出畫布邊界（右端或左端），超出則銷毀消失
     if (activeEffect.x > width || activeEffect.x < 0) {
-      activeEffect = null; // 移除特效
+      activeEffect = null;
     } else {
-      // 計算特效顯示大小（依畫面比例調整）
-      let effectDisplayH = height / 6; // 特效高度為畫布的 1/6
+      let effectDisplayH = height / 6; 
       let effectScale = effectDisplayH / effectFrameHeight;
       let effectDisplayW = effectFrameWidth * effectScale;
       let effectSrcX = floor(effectCurrentFrame) * effectFrameWidth;
 
-      // 繪製特效
       push();
       translate(activeEffect.x, activeEffect.y);
-      scale(activeEffect.direction, 1); // 讓特效跟隨角色方向翻轉
+      scale(activeEffect.direction, 1); 
       image(
         magicEffectSprite,
         0,
@@ -204,7 +276,6 @@ function draw() {
       );
       pop();
 
-      // 特效自身的動畫播放更新
       if (frameCount % 3 === 0) {
         effectCurrentFrame = (effectCurrentFrame + 1) % effectTotalFrames;
       }
@@ -214,15 +285,16 @@ function draw() {
 
 // 鍵盤按下事件
 function keyPressed() {
-  // 當按下空白鍵 (32)，且目前不是在施法中，則觸發魔法攻擊
-  if (key === ' ' && currentAction !== "magic") {
+  if (keyCode === UP_ARROW && currentAction !== "jump") {
+    currentAction = "jump";
+    jumpVelocityY = jumpForce;
+  }
+  else if (key === ' ' && currentAction !== "magic" && currentAction !== "jump") {
     currentAction = "magic";
-    magicCurrentFrame = 0; // 重置魔法動畫從第 0 張開始
+    magicCurrentFrame = 0; 
   } 
-  // 當按下左右方向鍵
   else if (keyCode === RIGHT_ARROW || keyCode === LEFT_ARROW) {
-    // 只有在非施法狀態下才能切換為走路
-    if (currentAction !== "magic") {
+    if (currentAction !== "magic" && currentAction !== "jump") {
       currentAction = "walk";
     }
   }
@@ -230,10 +302,9 @@ function keyPressed() {
 
 // 鍵盤放開事件
 function keyReleased() {
-  // 當放開左右鍵時，且目前不是在施法狀態，恢復為站立
   if (keyCode === RIGHT_ARROW || keyCode === LEFT_ARROW) {
     if (!keyIsDown(RIGHT_ARROW) && !keyIsDown(LEFT_ARROW)) {
-      if (currentAction !== "magic") {
+      if (currentAction !== "magic" && currentAction !== "jump") {
         currentAction = "stop";
       }
     }
